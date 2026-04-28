@@ -59,7 +59,7 @@ def calcular_distancia(p1, p2):
 st.title("🚜 Sistema Logístico de Movilización")
 
 # Nombre exacto según tu imagen 2 de GitHub
-nombre_archivo = "datam.csv" 
+nombre_archivo = "data.csv" 
 df_maestro, estado = cargar_datos(nombre_archivo)
 
 # Visor de estado

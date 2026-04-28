@@ -61,7 +61,7 @@ st.title("🚜 Logística: Rubiales & Caño Sur Este (Etapa 2)")
 
 try:
     # Carga del archivo con la nueva estructura
-    df_maestro = cargar_base_coordenadas("COORDENADAS_RUB_CASE.csv")
+    df_maestro = cargar_base_coordenadas("COORDENADAS GOR.xlsx")
     
     st.sidebar.header("Planificación de Ruta")
     ruta_input = st.sidebar.text_area("Lista de Clústeres (RB o CASE):", placeholder="CASE-01\nRB-1\nCASE-0096")

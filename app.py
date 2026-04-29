@@ -7,12 +7,11 @@ import math
 import os
 from folium.features import DivIcon
 
-st.set_page_config(page_title="Logística Rubiales v3.4", layout="wide")
-st.title("🚜 Plan Logístico Rubiales v3.4")
+st.set_page_config(page_title="Logística Rubiales v3.5", layout="wide")
+st.title("🚜 Sistema Logístico Rubiales v3.5")
 
 def proyectadas_a_latlon_manual(este, norte):
     try:
-        # Origen Nacional Colombia (EPSG:9377)
         lat_0, lon_0 = 4.0, -73.0
         f_este, f_norte = 5000000.0, 2000000.0
         scale, r_earth = 0.9992, 6378137.0
@@ -23,14 +22,15 @@ def proyectadas_a_latlon_manual(este, norte):
         return lat, lon
     except: return None, None
 
+# --- GESTIÓN DE DATOS ---
+st.sidebar.header("📁 Carga de Datos")
+archivo_subido = st.sidebar.file_uploader("Si el mapa está vacío, sube el CSV aquí:", type=["csv"])
+
 @st.cache_data
-def cargar_base_segura():
-    path = "COORDENADAS_GOR.xlsx - data.csv"
-    if not os.path.exists(path): return pd.DataFrame()
+def procesar_datos(file_source):
     try:
-        df = pd.read_csv(path, encoding='latin-1', sep=None, engine='python')
-        # Acceso por posición para evitar errores de nombres de columna
-        # 1: CLUSTER, 3: ESTE, 4: NORTE
+        df = pd.read_csv(file_source, encoding='latin-1', sep=None, engine='python')
+        # Extraer: CLUSTER (col 1), ESTE (col 3), NORTE (col 4)
         df_coords = df.iloc[:, [1, 3, 4]].copy()
         df_coords.columns = ['NAME', 'E', 'N']
         
@@ -46,68 +46,53 @@ def cargar_base_segura():
         df_coords['lat'] = lats
         df_coords['lon'] = lons
         df_coords['KEY'] = df_coords['NAME'].astype(str).str.replace(r'[^a-zA-Z0-9]', '', regex=True).str.upper()
-        
         return df_coords.dropna(subset=['lat']).groupby('NAME').first().reset_index()
-    except: return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error al procesar: {e}")
+        return pd.DataFrame()
 
-# --- LÓGICA DE VISUALIZACIÓN ---
-df_maestro = cargar_base_segura()
+# Intentar cargar desde archivo del repo o desde el subido
+df_maestro = pd.DataFrame()
+path_auto = "COORDENADAS_GOR.xlsx - data.csv"
 
-st.sidebar.header("📍 Control de Ruta")
-txt_input = st.sidebar.text_area("Buscar Clústeres:", "")
+if archivo_subido is not None:
+    df_maestro = procesar_datos(archivo_subido)
+elif os.path.exists(path_auto):
+    df_maestro = procesar_datos(path_auto)
 
-puntos_a_mostrar = []
-
+# --- INTERFAZ Y MAPA ---
+puntos_finales = []
 if not df_maestro.empty:
-    # 1. Intentar buscar lo que el usuario escribió
-    nombres_busqueda = [n.strip().upper() for n in re.split(r'[\n,]+', txt_input) if n.strip()]
+    st.sidebar.success("✅ Datos cargados correctamente")
+    txt_busqueda = st.sidebar.text_area("Buscar Clústeres (uno por línea):", "")
     
-    for i, nombre in enumerate(nombres_busqueda):
-        key = re.sub(r'[^a-zA-Z0-9]', '', nombre)
+    # Lógica de búsqueda
+    nombres = [n.strip().upper() for n in re.split(r'[\n,]+', txt_busqueda) if n.strip()]
+    for i, n in enumerate(nombres):
+        key = re.sub(r'[^a-zA-Z0-9]', '', n)
         match = df_maestro[df_maestro['KEY'] == key]
         if not match.empty:
-            puntos_a_mostrar.append({
-                'id': i+1, 'n': match.iloc[0]['NAME'], 
-                'lat': match.iloc[0]['lat'], 'lon': match.iloc[0]['lon'],
-                'color': 'red'
-            })
+            puntos_finales.append({'id': i+1, 'n': match.iloc[0]['NAME'], 'lat': match.iloc[0]['lat'], 'lon': match.iloc[0]['lon'], 'color': 'red'})
 
-    # 2. SI NO HAY BÚSQUEDA O NO SE ENCONTRÓ NADA, MOSTRAR POR DEFAULT
-    if not puntos_a_mostrar:
-        st.sidebar.warning("Mostrando puntos por defecto (Rubiales/Caño Sur)")
-        # Tomamos los primeros 10 puntos del archivo para asegurar visualización
-        defaults = df_maestro.head(10)
-        for i, row in defaults.iterrows():
-            puntos_a_mostrar.append({
-                'id': "D", 'n': row['NAME'], 
-                'lat': row['lat'], 'lon': row['lon'],
-                'color': 'blue'
-            })
+    # Si no hay búsqueda, mostrar los primeros 5 como prueba
+    if not puntos_finales:
+        for i, row in df_maestro.head(5).iterrows():
+            puntos_finales.append({'id': '•', 'n': row['NAME'], 'lat': row['lat'], 'lon': row['lon'], 'color': 'blue'})
 
-# --- MAPA ---
-# Centro inicial en el área de Rubiales
-c_lat, c_lon = 3.99, -71.73 
-if puntos_a_mostrar:
-    c_lat, c_lon = puntos_a_mostrar[0]['lat'], puntos_a_mostrar[0]['lon']
+# Configuración del Mapa
+m = folium.Map(location=[3.99, -71.73], zoom_start=11)
+if puntos_finales:
+    m.location = [puntos_finales[0]['lat'], puntos_finales[0]['lon']]
+    for p in puntos_finales:
+        folium.Marker([p['lat'], p['lon']], tooltip=p['n'], icon=folium.Icon(color=p['color'])).add_to(m)
+        folium.map.Marker([p['lat'], p['lon']], icon=DivIcon(icon_size=(20,20), icon_anchor=(-15,20),
+            html=f'<div style="font-size: 9pt; color: white; background: {p["color"]}; border-radius: 4px; padding: 2px 5px;">{p["n"]}</div>')).add_to(m)
 
-m = folium.Map(location=[c_lat, c_lon], zoom_start=11)
+st_folium(m, width=1100, height=600, key="mapa_v35")
 
-for p in puntos_a_mostrar:
-    folium.Marker(
-        [p['lat'], p['lon']], 
-        tooltip=p['n'], 
-        icon=folium.Icon(color=p['color'], icon='location-pin')
-    ).add_to(m)
-    
-    # Etiqueta flotante
-    folium.map.Marker(
-        [p['lat'], p['lon']],
-        icon=DivIcon(icon_size=(25,25), icon_anchor=(-15,25),
-        html=f'<div style="font-size: 9pt; color: white; background: {p["color"]}; border-radius: 3px; padding: 2px 5px; font-weight: bold; white-space: nowrap;">{p["n"]}</div>')
-    ).add_to(m)
-
-st_folium(m, width=1100, height=600, key="mapa_v34")
-
+# Lista desplegable de ayuda
 if not df_maestro.empty:
-    with st.expander("Ver lista completa de pozos detectados"):
-        st.write(df_maestro['NAME'].unique().tolist())
+    with st.expander("🔍 Ver todos los Clústeres detectados en el archivo"):
+        st.write(df_maestro['NAME'].sort_values().tolist())
+else:
+    st.warning("⚠️ No se detectó el archivo automáticamente. Por favor, súbelo manualmente en el panel de la izquierda.")

@@ -26,7 +26,7 @@ def proyectadas_a_latlon(este, norte):
 # 3. Carga de Datos (Simplificada y sin 'NoneType' errors)
 @st.cache_data
 def cargar_base():
-    path = "COORDENADAS_GOR.xlsx - data.csv"
+    path = "COORDENADAS_GOR.xlsx"
     
     if not os.path.exists(path):
         st.error(f"Falta el archivo: {path}")

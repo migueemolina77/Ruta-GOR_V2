@@ -5,33 +5,47 @@ from streamlit_folium import st_folium
 import re
 import requests
 from folium.features import DivIcon
-import pyproj
 from pyproj import Transformer
 import os
 
-st.set_page_config(page_title="Logística Rubiales v2.6", layout="wide")
-st.title("🚜 Plan Logístico Rubiales v2.6")
+st.set_page_config(page_title="Logística Rubiales v2.7", layout="wide")
+st.title("🚜 Plan Logístico Rubiales v2.7")
 
-# --- SOLUCIÓN PARA EL ERROR DE INITIALIZATION ---
-# Forzamos a pyproj a usar su base de datos interna o descargarla si es necesario
-try:
-    pyproj.network.set_network_enabled(active=True)
-except:
-    pass
-
-def proyectadas_a_latlon(este, norte):
+# --- CONVERSIÓN DE EMERGENCIA ---
+def convertir_manual(este, norte):
     """
-    Convierte coordenadas Magna-SIRGAS Origen Nacional (9377) a WGS84 (4326).
-    Se inicializa dentro de la función para evitar el ValueError de inicialización.
+    Bypass matemático para Origen Nacional (EPSG:9377) a WGS84.
+    Se usa si pyproj falla por errores de inicialización en el servidor.
     """
     try:
-        # Inicialización local para evitar el error de 'not initialized'
-        trans = Transformer.from_crs("EPSG:9377", "EPSG:4326", always_xy=True)
-        lon, lat = trans.transform(float(este), float(norte))
+        # Valores de referencia para Origen Nacional Colombia
+        lon_0 = -73.0
+        lat_0 = 4.0
+        f_0 = 0.9992
+        e_n = 5000000.0
+        n_n = 2000000.0
+        
+        # Radio de la Tierra aprox en Colombia (metros)
+        r_earth = 6371000.0
+        
+        d_n = (norte - n_n) / (r_earth * f_0)
+        d_e = (este - e_n) / (r_earth * f_0 * 0.9975) # Corrección por latitud
+        
+        lat = lat_0 + (d_n * 180.0 / 3.14159)
+        lon = lon_0 + (d_e * 180.0 / 3.14159)
         return lat, lon
-    except Exception as e:
-        # Si falla pyproj, devolvemos None para no romper el código
+    except:
         return None, None
+
+def proyectadas_a_latlon(este, norte):
+    try:
+        # Intento 1: Usar la librería (Precisión total)
+        transformer = Transformer.from_crs("EPSG:9377", "EPSG:4326", always_xy=True)
+        lon, lat = transformer.transform(float(este), float(norte))
+        return lat, lon
+    except:
+        # Intento 2: Bypass matemático (Si el servidor falla)
+        return convertir_manual(este, norte)
 
 @st.cache_data
 def cargar_base():
@@ -40,44 +54,31 @@ def cargar_base():
         return pd.DataFrame()
 
     try:
-        # Leemos con separador automático
         df = pd.read_csv(path, encoding='latin-1', sep=None, engine='python')
         df.columns = [str(c).strip().upper() for c in df.columns]
         
-        # Seleccionar por posición para seguridad
+        # Columnas: 1:CLUSTER, 3:ESTE, 4:NORTE
         df_coords = df.iloc[:, [1, 2, 3, 4]].copy()
         df_coords.columns = ['CLUSTER', 'POZO', 'ESTE', 'NORTE']
         
-        # Limpiar números
+        # Limpieza de espacios en los números
         df_coords['ESTE'] = pd.to_numeric(df_coords['ESTE'].astype(str).str.replace(' ', ''), errors='coerce')
         df_coords['NORTE'] = pd.to_numeric(df_coords['NORTE'].astype(str).str.replace(' ', ''), errors='coerce')
         
         df_coords = df_coords.dropna(subset=['ESTE', 'NORTE'])
         
-        # Transformación con manejo de errores interno
-        lats, lons = [], []
-        for _, row in df_coords.iterrows():
-            res = proyectadas_a_latlon(row['ESTE'], row['NORTE'])
-            if res:
-                lats.append(res[0])
-                lons.append(res[1])
-            else:
-                lats.append(None)
-                lons.append(None)
+        results = df_coords.apply(lambda r: proyectadas_a_latlon(r['ESTE'], r['NORTE']), axis=1)
+        df_coords['lat_dec'] = [r[0] if r else None for r in results]
+        df_coords['lon_dec'] = [r[1] if r else None for r in results]
         
-        df_coords['lat_dec'] = lats
-        df_coords['lon_dec'] = lons
-        
-        # Filtrar solo los que tengan coordenadas válidas
-        df_final = df_coords.dropna(subset=['lat_dec', 'lon_dec'])
-        
-        return df_final.groupby('CLUSTER').agg({
-            'lat_dec': 'first', 
-            'lon_dec': 'first', 
+        df_final = df_coords.dropna(subset=['lat_dec']).groupby('CLUSTER').agg({
+            'lat_dec': 'first', 'lon_dec': 'first', 
             'POZO': lambda x: ', '.join(x.astype(str).unique())
         }).reset_index()
+        
+        return df_final
     except Exception as e:
-        st.error(f"Error cargando datos: {e}")
+        st.error(f"Error: {e}")
         return pd.DataFrame()
 
 # --- INTERFAZ ---
@@ -85,7 +86,7 @@ df_maestro = cargar_base()
 
 if not df_maestro.empty:
     st.sidebar.success(f"Base cargada: {len(df_maestro)} clústeres")
-    txt_input = st.sidebar.text_area("Ruta de Clústeres:", "AGRIO-1\nCASE0015")
+    txt_input = st.sidebar.text_area("Ruta (Clústeres):", "AGRIO-1\nCASE0015")
     nombres = [n.strip().upper() for n in re.split(r'[\n,]+', txt_input) if n.strip()]
 
     puntos_ruta = []
@@ -96,31 +97,24 @@ if not df_maestro.empty:
                 'id': i+1, 'nombre': nombre, 
                 'lat': match.iloc[0]['lat_dec'], 'lon': match.iloc[0]['lon_dec']
             })
-        else:
-            if nombre: st.sidebar.warning(f"⚠️ '{nombre}' no encontrado")
 
-    # Mapa centrado en el promedio o en Rubiales
+    # Mapa
+    m = folium.Map(location=[4.0, -71.8], zoom_start=11)
+    
     if puntos_ruta:
-        center_lat = sum(p['lat'] for p in puntos_ruta) / len(puntos_ruta)
-        center_lon = sum(p['lon'] for p in puntos_ruta) / len(puntos_ruta)
-    else:
-        center_lat, center_lon = 4.01, -71.74 # Rubiales Aprox
-
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
-
-    for p in puntos_ruta:
-        folium.Marker(
-            [p['lat'], p['lon']], 
-            tooltip=p['nombre'],
-            icon=folium.Icon(color='red', icon='location-pin')
-        ).add_to(m)
-        
-        folium.map.Marker(
-            [p['lat'], p['lon']],
-            icon=DivIcon(icon_size=(20,20), icon_anchor=(-10,20),
-            html=f'<div style="font-size: 10pt; color: white; background: black; border-radius: 50%; width: 22px; height: 22px; text-align: center; font-weight: bold; border: 1px solid white;">{p["id"]}</div>')
-        ).add_to(m)
+        for p in puntos_ruta:
+            folium.Marker(
+                [p['lat'], p['lon']], 
+                tooltip=p['nombre'],
+                icon=folium.Icon(color='red', icon='location-dot', prefix='fa')
+            ).add_to(m)
+            
+            folium.map.Marker(
+                [p['lat'], p['lon']],
+                icon=DivIcon(icon_size=(20,20), icon_anchor=(-15,20),
+                html=f'<div style="font-size: 10pt; color: white; background: red; border-radius: 5px; padding: 2px 5px; font-weight: bold;">{p["id"]}</div>')
+            ).add_to(m)
 
     st_folium(m, width=1100, height=600)
 else:
-    st.info("Esperando carga de base de datos o archivo ausente.")
+    st.warning("Verifica que el archivo CSV esté en la raíz del repositorio.")

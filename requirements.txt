@@ -4,4 +4,4 @@ folium
 streamlit-folium
 openpyxl
 pip
-install pyproj
+pyproj
